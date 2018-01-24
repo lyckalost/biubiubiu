@@ -89,11 +89,9 @@ int main(int argc, char* argv[])
             if (FD_ISSET(i, &read_fds) == 0)
                 continue;
             // 拿到sock，那么接下来是accept client放入set
-            printf("i:%d sock:%d fdmax:%d\n", i, sock, fdmax);
             if (i == sock) {
                 cli_size = sizeof(cli_addr);
                 client_sock = accept(sock, (struct sockaddr *) &cli_addr, &cli_size);
-                printf("put port:%d with fd:%d into set\n", ntohs(cli_addr.sin_port), client_sock);
                 if (client_sock == -1) {
                     perror("accept error!");
                 } else {
@@ -103,38 +101,14 @@ int main(int argc, char* argv[])
                 }
             } 
             else {
-//                memset(buf, 0, BUF_SIZE);
-//                readret = recv(i, buf, BUF_SIZE, 0);
-//                if (readret == 0) {
-//                    FD_CLR(i, &master);
-//                    close_socket(i);
-//                } else {
-//                    send(i, buf, readret, 0);
-//                }
-                memset(buf, 0, BUF_SIZE); 
-                readret = 0;
-                while ((readret = recv(i, buf, BUF_SIZE, 0)) >= 1) {
-                    printf("readret: %zd\n", readret);
-                    int sentret = send(i, buf, readret, 0);
-                    printf("sentret: %zd\n", sentret);
-                    if (send(i, buf, readret, 0) != readret) {
-                        close_socket(i);
-                        close_socket(sock);
-                        perror("send to client failed!");
-                    }
-                    memset(buf, 0, BUF_SIZE);
-                }
-                if (readret == -1) {
+                memset(buf, 0, BUF_SIZE);
+                readret = recv(i, buf, BUF_SIZE, 0);
+                if (readret == 0) {
+                    FD_CLR(i, &master);
                     close_socket(i);
-                    close_socket(sock);
-                    perror("send to client failed!");
+                } else {
+                    send(i, buf, readret, 0);
                 }
-                if (close_socket(i)) {
-                    close_socket(sock);
-                    perror("close client fail!");
-                }
-                printf("rm %d from set\n", i);
-                FD_CLR(i, &master);
             }
         }
     }

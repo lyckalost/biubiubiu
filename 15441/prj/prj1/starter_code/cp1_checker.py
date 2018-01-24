@@ -31,14 +31,12 @@ RECV_EACH_TIMEOUT = 0.05
 
 for i in xrange(numConnections):
     s = socket(AF_INET, SOCK_STREAM)
-    s.settimeout(1)
+    #s.settimeout(1)
     s.connect((serverHost, serverPort))
-    print "Connection Done for port: ", s.getsockname()[1]
     socketList.append(s)
 
 
 for i in xrange(numTrials):
-    print "Start trial: ", i
     socketSubset = []
     randomData = []
     randomLen = []
@@ -48,13 +46,10 @@ for i in xrange(numTrials):
         random_string = os.urandom(random_len)
         randomLen.append(random_len)
         randomData.append(random_string)
-        print "socket:", j, socketSubset[j].getsockname()[1], " sending"
         socketSubset[j].send(random_string)
 
     for j in xrange(numWritesReads):
         data = socketSubset[j].recv(randomLen[j])
-        print "socket: ", j, socketSubset[j].getsockname()[1], " recving"
-        print "data: ", len(data)
         start_time = time.time()
         while True:
             if len(data) == randomLen[j]:
