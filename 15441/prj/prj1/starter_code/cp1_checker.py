@@ -48,11 +48,13 @@ for i in xrange(numTrials):
         random_string = os.urandom(random_len)
         randomLen.append(random_len)
         randomData.append(random_string)
-        print socketSubset[j].getsockname()[1], " sending"
+        print "socket:", j, socketSubset[j].getsockname()[1], " sending"
         socketSubset[j].send(random_string)
 
     for j in xrange(numWritesReads):
         data = socketSubset[j].recv(randomLen[j])
+        print "socket: ", j, socketSubset[j].getsockname()[1], " recving"
+        print "data: ", len(data)
         start_time = time.time()
         while True:
             if len(data) == randomLen[j]:
