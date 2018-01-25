@@ -103,11 +103,20 @@ int main(int argc, char* argv[])
             else {
                 memset(buf, 0, BUF_SIZE);
                 readret = recv(i, buf, BUF_SIZE, 0);
+                if (readret == -1) {
+                    close_socket(i);
+                    close_socket(sock);
+                    perror("read from client failed!");
+                }
                 if (readret == 0) {
                     FD_CLR(i, &master);
                     close_socket(i);
                 } else {
-                    send(i, buf, readret, 0);
+                    if(send(i, buf, readret, 0) != readret) {
+                        close_socket(i);
+                        close_socket(sock);
+                        perror("send to client failed!");
+                    }
                 }
             }
         }
