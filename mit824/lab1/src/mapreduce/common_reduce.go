@@ -1,5 +1,11 @@
 package mapreduce
 
+import (
+	"os"
+	"encoding/json"
+	"sort"
+)
+
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
@@ -44,4 +50,47 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	//
+	var kvSlice []KeyValue;
+
+	for i := 0; i < nMap; i++ {
+		var intermediateFname string = reduceName(jobName, i, reduceTask);
+		f, _ := os.Open(intermediateFname)
+		dec := json.NewDecoder(f)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kvSlice = append(kvSlice, kv)
+		}
+		f.Close()
+	}
+	sort.Slice(kvSlice, func(i, j int) bool {
+		return kvSlice[i].Key < kvSlice[j].Key
+	});
+
+	outF, _ := os.Create(outFile);
+	outEco := json.NewEncoder(outF)
+
+	var kvSliceLen int = len(kvSlice)
+	kvSlice = append(kvSlice, KeyValue{kvSlice[kvSliceLen - 1].Key + "$$", ""})
+
+	var keyNow string = kvSlice[0].Key
+	var startIdx int = 0
+	for i := 0; i < len(kvSlice); i++ {
+		if keyNow != kvSlice[i].Key {
+			strSlice := make([]string, i - startIdx)
+			for j := startIdx; j < i; j++ {
+				strSlice[j - startIdx] = kvSlice[j].Value
+			}
+			reduceByKeyAns := reduceF(keyNow, strSlice)
+			outKV := KeyValue{keyNow, reduceByKeyAns}
+			outEco.Encode(&outKV)
+			keyNow = kvSlice[i].Key
+			startIdx = i
+		}
+	}
+
+	outF.Close()
+
 }
