@@ -1,8 +1,8 @@
 package mapreduce
 
 import (
-	"os"
 	"encoding/json"
+	"os"
 	"sort"
 )
 
@@ -50,12 +50,14 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	//
-	var kvSlice []KeyValue;
+	var kvSlice []KeyValue
 
+	// loop over all map tasks to get all intermediate result for this reduceTask
 	for i := 0; i < nMap; i++ {
-		var intermediateFname string = reduceName(jobName, i, reduceTask);
+		var intermediateFname string = reduceName(jobName, i, reduceTask)
 		f, _ := os.Open(intermediateFname)
 		dec := json.NewDecoder(f)
+		// go through the whole file to get all kvs
 		for {
 			var kv KeyValue
 			if err := dec.Decode(&kv); err != nil {
@@ -67,21 +69,21 @@ func doReduce(
 	}
 	sort.Slice(kvSlice, func(i, j int) bool {
 		return kvSlice[i].Key < kvSlice[j].Key
-	});
+	})
 
-	outF, _ := os.Create(outFile);
+	outF, _ := os.Create(outFile)
 	outEco := json.NewEncoder(outF)
 
 	var kvSliceLen int = len(kvSlice)
-	kvSlice = append(kvSlice, KeyValue{kvSlice[kvSliceLen - 1].Key + "$$", ""})
+	kvSlice = append(kvSlice, KeyValue{kvSlice[kvSliceLen-1].Key + "$$", ""})
 
 	var keyNow string = kvSlice[0].Key
 	var startIdx int = 0
 	for i := 0; i < len(kvSlice); i++ {
 		if keyNow != kvSlice[i].Key {
-			strSlice := make([]string, i - startIdx)
+			strSlice := make([]string, i-startIdx)
 			for j := startIdx; j < i; j++ {
-				strSlice[j - startIdx] = kvSlice[j].Value
+				strSlice[j-startIdx] = kvSlice[j].Value
 			}
 			reduceByKeyAns := reduceF(keyNow, strSlice)
 			outKV := KeyValue{keyNow, reduceByKeyAns}
