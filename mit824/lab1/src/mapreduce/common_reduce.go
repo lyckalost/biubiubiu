@@ -74,6 +74,11 @@ func doReduce(
 	outF, _ := os.Create(outFile)
 	outEco := json.NewEncoder(outF)
 
+	if len(kvSlice) == 0 {
+		outF.Close()
+		return
+	}
+
 	var kvSliceLen int = len(kvSlice)
 	kvSlice = append(kvSlice, KeyValue{kvSlice[kvSliceLen-1].Key + "$$", ""})
 
