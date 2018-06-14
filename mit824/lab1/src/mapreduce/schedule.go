@@ -5,6 +5,24 @@ import (
 		"sync"
 )
 
+const FINISHED = 0
+const INPROGRESS = 1
+const UNFINISHED = 2
+
+func doTask(wChan chan string, wgroup *sync.WaitGroup,
+	jobId int, jobStates []int, args DoTaskArgs) {
+
+	workerAddr := <- wChan
+	workCompleted := call(workerAddr, "Worker.DoTask", args, nil)
+	for (!workCompleted) {
+		workCompleted = call(workerAddr, "Worker.DoTask", args, nil)
+	}
+	// why must put wgroup.Done() before wChan <- workerAddr
+	// because put worker into the channel may be blocked
+	wgroup.Done()
+	wChan <- workerAddr
+}
+
 //
 // schedule() starts and waits for all tasks in the given phase (mapPhase
 // or reducePhase). the mapFiles argument holds the names of the files that
@@ -27,35 +45,25 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	}
 
 	fmt.Printf("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, n_other)
-	if phase == mapPhase {
-		var wg sync.WaitGroup
-		for i, eachMapFile := range mapFiles {
-			args := DoTaskArgs{jobName, eachMapFile, mapPhase, i, n_other}
-			wg.Add(1)
-			go func(wChan chan string, wgroup *sync.WaitGroup) {
-				workerAddr := <- wChan
-				call(workerAddr, "Worker.DoTask", args, nil)
-				// why must put wgroup.Done() before wChan <- workerAddr
-				// because put worker into the channel may be blocked
-				wgroup.Done()
-				wChan <- workerAddr
-			} (registerChan, &wg)
-		}
-		wg.Wait()
-	} else {
-		var wg sync.WaitGroup
-		for i := 0; i < nReduce; i++ {
-			args := DoTaskArgs{jobName, "", reducePhase, i, n_other}
-			wg.Add(1)
-			go func(wChan chan string, wgroup *sync.WaitGroup) {
-				workerAddr := <- wChan
-				call(workerAddr, "Worker.DoTask", args, nil)
-				wgroup.Done()
-				wChan <- workerAddr
-			} (registerChan, &wg)
-		}
-		wg.Wait()
+	fmt.Printf("Channel size: %d\n", cap(registerChan))
+	jobStates := make([]int, ntasks)
+	for i, _ := range jobStates {
+		jobStates[i] = UNFINISHED
 	}
+
+	var wg sync.WaitGroup
+	for jobId := 0; jobId < ntasks; jobId++ {
+		var args DoTaskArgs
+		if (phase == mapPhase) {
+			args = DoTaskArgs{jobName, mapFiles[jobId], mapPhase, jobId, n_other}
+		} else {
+			args = DoTaskArgs{jobName, "", reducePhase, jobId, n_other}
+		}
+		wg.Add(1)
+		go doTask(registerChan, &wg, jobId, jobStates, args)
+	}
+	wg.Wait()
+
 	// All ntasks tasks have to be scheduled on workers. Once all tasks
 	// have completed successfully, schedule() should return.
 	//
