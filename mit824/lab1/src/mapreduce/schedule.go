@@ -14,13 +14,14 @@ func doTask(wChan chan string, wgroup *sync.WaitGroup,
 
 	workerAddr := <- wChan
 	workCompleted := call(workerAddr, "Worker.DoTask", args, nil)
-	for (!workCompleted) {
-		workCompleted = call(workerAddr, "Worker.DoTask", args, nil)
+	if (workCompleted) {
+		wgroup.Done()
+	} else {
+		go doTask(wChan, wgroup, jobId, jobStates, args)
 	}
+	wChan <- workerAddr
 	// why must put wgroup.Done() before wChan <- workerAddr
 	// because put worker into the channel may be blocked
-	wgroup.Done()
-	wChan <- workerAddr
 }
 
 //
