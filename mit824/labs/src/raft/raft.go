@@ -50,6 +50,9 @@ type Raft struct {
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
+	//2A
+	currentTerm int
+	voteFor int
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -63,7 +66,11 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
+
 	// Your code here (2A).
+	term = rf.currentTerm
+	isleader = (rf.voteFor == rf.me)
+
 	return term, isleader
 }
 
@@ -116,6 +123,8 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	var term int
+	var candidateId int
 }
 
 //
@@ -124,6 +133,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	var term int
+	var voteGranted bool
 }
 
 //
@@ -131,6 +142,42 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	if rf.currentTerm < args.term {
+		// to follower state?
+		reply.term = args.term
+		reply.voteGranted = true
+		rf.currentTerm = args.term
+		rf.voteFor = args.candidateId
+	} else if rf.currentTerm > args.term {
+		reply.term = rf.currentTerm
+		reply.voteGranted = false
+	} else {
+		if rf.voteFor == -1 {
+			reply.term = args.term
+			reply.voteGranted = true
+			rf.voteFor = args.candidateId
+		} else {
+			reply.term = args.term
+			reply.voteGranted = false
+		}
+	}
+}
+
+type AppendEntriesArgs struct {
+	var term int
+}
+
+type AppendEntriesReply struct {
+	var term int
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	return nil
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, args *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
 }
 
 //
@@ -219,6 +266,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+
+	//2A
+	rf.currentTerm = 0
+	rf.voteFor = -1
 
 	// Your initialization code here (2A, 2B, 2C).
 
