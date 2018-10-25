@@ -23,8 +23,6 @@ import "labrpc"
 // import "bytes"
 // import "labgob"
 
-
-
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -42,6 +40,15 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+type WorkerState int
+
+// wokerStae Enum
+const (
+	Candidate WorkerState = iota
+	Leader
+	Follower
+)
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -52,7 +59,7 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	//2A
 	currentTerm int
-	voteFor int
+	workerState WorkerState
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -69,11 +76,10 @@ func (rf *Raft) GetState() (int, bool) {
 
 	// Your code here (2A).
 	term = rf.currentTerm
-	isleader = (rf.voteFor == rf.me)
+	isleader = (rf.workerState == Leader)
 
 	return term, isleader
 }
-
 
 //
 // save Raft's persistent state to stable storage,
@@ -90,7 +96,6 @@ func (rf *Raft) persist() {
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 }
-
 
 //
 // restore previously persisted state.
@@ -114,17 +119,14 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
-
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	var term int
-	var candidateId int
+	term        int
+	candidateId int
 }
 
 //
@@ -133,49 +135,71 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	var term int
-	var voteGranted bool
+	term        int
+	voteGranted bool
 }
 
 //
 // example RequestVote RPC handler.
+// RequestVote can only be sent from candidate
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	if rf.currentTerm < args.term {
-		// to follower state?
+		// leader or candidate to follower, state transition happens here
+		rf.currentTerm = args.term
+		rf.workerState = Follower
+
 		reply.term = args.term
 		reply.voteGranted = true
-		rf.currentTerm = args.term
-		rf.voteFor = args.candidateId
-	} else if rf.currentTerm > args.term {
-		reply.term = rf.currentTerm
-		reply.voteGranted = false
 	} else {
-		if rf.voteFor == -1 {
-			reply.term = args.term
+		// if requestor term equals or smaller than currentTerm, consider
+		// leader: should not approve vote, should not change state
+		// candidate: should not approve vote, should not change state
+		// follower: voted for another candidate, should not change state
+		reply.term = rf.currentTerm
+		if args.candidateId == rf.me {
 			reply.voteGranted = true
-			rf.voteFor = args.candidateId
 		} else {
-			reply.term = args.term
 			reply.voteGranted = false
 		}
 	}
 }
 
 type AppendEntriesArgs struct {
-	var term int
+	term     int
+	leaderId int
 }
 
 type AppendEntriesReply struct {
-	var term int
+	term    int
+	success bool
 }
 
+// AppendEntries can only be sent from candidate or leader to make sure it has 'leadership' to you
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	return nil
+	if rf.currentTerm < args.term {
+		// currentTerm is smaller, no matter what state you are in, become Follower, update term
+		// Approve appendEntry
+		rf.workerState = Follower
+		rf.currentTerm = args.term
+
+		reply.term = args.term
+		reply.success = true
+	} else {
+		// currentTerm is larger or equal, keep term
+		// 1) you are leader, remain leader
+		// 2) you are follower or candidate, become candidate
+		// Reject appendEntry
+		if rf.workerState != Leader {
+			rf.workerState = Candidate
+		}
+		reply.term = rf.currentTerm
+		reply.success = false
+	}
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, args *AppendEntriesReply) bool {
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
@@ -214,7 +238,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -234,7 +257,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -269,13 +291,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	//2A
 	rf.currentTerm = 0
-	rf.voteFor = -1
+	rf.workerState = Candidate
 
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 
 	return rf
 }
