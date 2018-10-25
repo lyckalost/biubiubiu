@@ -60,6 +60,7 @@ type Raft struct {
 	//2A
 	currentTerm int
 	workerState WorkerState
+	votedFor    int
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -142,6 +143,9 @@ type RequestVoteReply struct {
 //
 // example RequestVote RPC handler.
 // RequestVote can only be sent from candidate
+// Each worker must only vote for one leader at a time, it means we need to make a difference between currentTerm > other.term and currentTerm = other.term
+// for currentTerm > other.term, it declines the request anyway, since it is outdated
+// for currentTerm == other.term, they are on the same page, we should discuss the state
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
@@ -149,21 +153,43 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// leader or candidate to follower, state transition happens here
 		rf.currentTerm = args.term
 		rf.workerState = Follower
+		rf.votedFor = args.candidateId
 
 		reply.term = args.term
 		reply.voteGranted = true
-	} else {
-		// if requestor term equals or smaller than currentTerm, consider
-		// leader: should not approve vote, should not change state
-		// candidate: should not approve vote, should not change state
-		// follower: voted for another candidate, should not change state
+	} else if rf.currentTerm > args.term {
+		// not on the same page, declines always, no state or term change
 		reply.term = rf.currentTerm
-		if args.candidateId == rf.me {
+		reply.voteGranted = false
+	} else {
+		reply.term = rf.currentTerm
+		// on the same page, only a candidate can vote for others and become a Follower.
+		// leader and follower kind of "freezed" on this term. (One worker can only vote for one in a term)
+		if rf.workerState == Candidate {
+			// in case RPC is used for its own requestVote, do not follow itself
+			rf.votedFor = args.candidateId
+			if args.candidateId != rf.me {
+				rf.workerState = Follower
+			}
+
 			reply.voteGranted = true
 		} else {
 			reply.voteGranted = false
 		}
 	}
+
+	// else {
+	// 	// if requestor term equals or smaller than currentTerm, consider
+	// 	// leader: should not approve vote, should not change state
+	// 	// candidate: should not approve vote, should not change state
+	// 	// follower: voted for another candidate, should not change state
+	// 	reply.term = rf.currentTerm
+	// 	if args.candidateId == rf.me {
+	// 		reply.voteGranted = true
+	// 	} else {
+	// 		reply.voteGranted = false
+	// 	}
+	// }
 }
 
 type AppendEntriesArgs struct {
@@ -176,26 +202,34 @@ type AppendEntriesReply struct {
 	success bool
 }
 
-// AppendEntries can only be sent from candidate or leader to make sure it has 'leadership' to you
+// AppendEntries can only be sent from candidate(??? still confusing here) or leader to make sure it has 'leadership' to you
+// Each worker must only vote for one leader at a time, it means we need to make a difference between currentTerm > other.term and currentTerm = other.term
+// for currentTerm > other.term, it declines the request anyway, since it is outdated
+// for currentTerm == other.term, they are on the same page, we should discuss the state
+// keep in mind, if a worker is candidate, it already votes for itself
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if rf.currentTerm < args.term {
 		// currentTerm is smaller, no matter what state you are in, become Follower, update term
 		// Approve appendEntry
 		rf.workerState = Follower
 		rf.currentTerm = args.term
+		rf.votedFor = args.leaderId
 
 		reply.term = args.term
 		reply.success = true
-	} else {
-		// currentTerm is larger or equal, keep term
-		// 1) you are leader, remain leader
-		// 2) you are follower or candidate, become candidate
-		// Reject appendEntry
-		if rf.workerState != Leader {
-			rf.workerState = Candidate
-		}
+	} else if rf.currentTerm > args.term {
+		// Rejects "leadership" claim, just ignore outdated workers
 		reply.term = rf.currentTerm
 		reply.success = false
+	} else {
+		// if they are on the same page, it is almost the same as <, but let's keep it here for a better explanation
+		// i am thinking about two leaders and followers with different leaders, it seems that we don't need to consider this for now
+		// let's assume it would only be Candidate and Follower
+		rf.workerState = Follower
+		rf.votedFor = args.leaderId
+
+		reply.term = args.term
+		reply.success = true
 	}
 }
 
@@ -292,6 +326,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//2A
 	rf.currentTerm = 0
 	rf.workerState = Candidate
+	rf.votedFor = me
 
 	// Your initialization code here (2A, 2B, 2C).
 
