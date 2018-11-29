@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -58,10 +57,10 @@ const (
 const LeaderHeartbeatIntervalMilli = 20
 
 // FollowerHeartbeatTimeoutMilli : Define Follower heartbeat timeout here.
-const FollowerHeartbeatTimeoutMilli = 500
+const FollowerHeartbeatTimeoutMilli = 100
 
 // ElectionTimeoutMilli : Define Election timeout of each term here.
-const ElectionTimeoutMilli = 100
+const ElectionTimeoutMilli = 500
 
 // Raft :
 // A Go object implementing a single Raft peer.
@@ -74,8 +73,6 @@ type Raft struct {
 	//2A
 	currentTerm      int
 	workerState      WorkerState
-	votedFor         int
-	lastHearbeatTime time.Time
 	heartbeatCh      chan bool
 	electionSignalCh chan bool
 	leaderSignalCh   chan bool
@@ -172,7 +169,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// leader or candidate to follower, state transition happens here
 		rf.currentTerm = args.Term
 		rf.workerState = Follower
-		rf.votedFor = args.CandidateID
 
 		reply.Term = args.Term
 		reply.VoteGranted = true
@@ -187,7 +183,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// leader and follower kind of "freezed" on this term. (One worker can only vote for one in a term)
 		if rf.workerState == Candidate {
 			// in case RPC is used for its own requestVote, do not follow itself
-			rf.votedFor = args.CandidateID
 			if args.CandidateID != rf.me {
 				rf.workerState = Follower
 			}
@@ -234,7 +229,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// Approve appendEntry
 		rf.workerState = Follower
 		rf.currentTerm = args.Term
-		rf.votedFor = args.LeaderID
 
 		reply.Term = args.Term
 		reply.Success = true
@@ -249,7 +243,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// let's assume it would only be Candidate and Follower
 		if args.LeaderID != rf.me {
 			rf.workerState = Follower
-			rf.votedFor = args.LeaderID
 		}
 
 		reply.Term = args.Term
@@ -295,37 +288,27 @@ func (rf *Raft) LaunchStartNewRoundElectionListen(electionSignalCh chan bool, le
 		}
 		randTimeoutMilli := ElectionTimeoutMilli + ElectionTimeoutMilli/4 -
 			rand.Intn(ElectionTimeoutMilli/2)
-		time.Sleep(time.Duration(randTimeoutMilli) * time.Millisecond)
-		// timeout := time.After(time.Duration(randTimeoutMilli) * time.Millisecond)
-		// // here tick can be set as random values, but i assume the RPC reply time will be similar to hearbeat time
-		// tick := time.Tick(time.Duration(FollowerHeartbeatTimeoutMilli) * time.Millisecond)
+		timeout := time.After(time.Duration(randTimeoutMilli) * time.Millisecond)
+		// here tick can be set as random values, but i assume the RPC reply time will be similar to hearbeat time
+		tick := time.Tick(time.Duration(LeaderHeartbeatIntervalMilli) * time.Millisecond)
 
 		voteAcquired := 0
-		// electionInterrupted := false
-		// for !electionInterrupted {
-		// 	select {
-		// 	case <-timeout:
-		// 		electionInterrupted = true
-		// 	case <-tick:
-		// 		for peerID := 0; peerID < len(rf.peers); peerID++ {
-		// 			if replyArr[peerID].Term > rf.currentTerm {
-		// 				rf.workerState = Follower
-		// 				rf.votedFor = peerID
-		// 				break
-		// 			} else if replyArr[peerID].VoteGranted {
-		// 				voteAcquired++
-		// 			}
-		// 		}
-		// 		electionInterrupted = (voteAcquired*2 > len(rf.peers))
-		// 	}
-		// }
-		for peerID := 0; peerID < len(rf.peers); peerID++ {
-			if replyArr[peerID].Term > rf.currentTerm {
-				rf.workerState = Follower
-				rf.votedFor = peerID
-				break
-			} else if replyArr[peerID].VoteGranted {
-				voteAcquired++
+		electionInterrupted := false
+		for !electionInterrupted {
+			select {
+			case <-timeout:
+				electionInterrupted = true
+			case <-tick:
+				voteAcquired = 0
+				for peerID := 0; peerID < len(rf.peers); peerID++ {
+					if replyArr[peerID].Term > rf.currentTerm {
+						rf.workerState = Follower
+						electionInterrupted = true
+					} else if replyArr[peerID].VoteGranted {
+						voteAcquired++
+					}
+				}
+				electionInterrupted = (voteAcquired*2 > len(rf.peers))
 			}
 		}
 
@@ -428,12 +411,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := 0
 	isLeader := false
-	fmt.Println("Server Starting")
-	go rf.LaunchPeriodicHeartbeatCheck(rf.heartbeatCh, rf.electionSignalCh)
-	go rf.LaunchStartNewRoundElectionListen(rf.electionSignalCh, rf.leaderSignalCh)
-	go rf.LaunchLeaderHeartbeatListen(rf.leaderSignalCh)
-
-	rf.electionSignalCh <- true
 
 	// Your code here (2B).
 
@@ -471,7 +448,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//2A
 	rf.currentTerm = 0
 	rf.workerState = Follower
-	rf.votedFor = me
 	rf.heartbeatCh = make(chan bool, 3)
 	rf.electionSignalCh = make(chan bool, 3)
 	rf.leaderSignalCh = make(chan bool, 3)
