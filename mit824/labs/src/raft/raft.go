@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -62,6 +63,12 @@ const FollowerHeartbeatTimeoutMilli = 100
 // ElectionTimeoutMilli : Define Election timeout of each term here.
 const ElectionTimeoutMilli = 500
 
+// LogEntry :
+type LogEntry struct {
+	Term    int
+	Command interface{}
+}
+
 // Raft :
 // A Go object implementing a single Raft peer.
 //
@@ -77,6 +84,13 @@ type Raft struct {
 	electionSignalCh chan bool
 	leaderSignalCh   chan bool
 
+	//2B
+	commitIndex int
+	lastApplied int
+	nextIndex   []int
+	matchIndex  []int
+	logs        []LogEntry
+	applyCh     chan ApplyMsg
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -142,8 +156,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term        int
-	CandidateID int
+	Term         int
+	CandidateID  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // RequestVoteReply :
@@ -209,13 +225,62 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 type AppendEntriesArgs struct {
-	Term     int
-	LeaderID int
+	Term         int
+	LeaderID     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+}
+
+// SynEntriesWithLeader :
+func (rf *Raft) SynEntriesWithLeader(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	logSizeBeforeSync := len(rf.logs)
+	offset := args.PrevLogIndex - 1 + 1
+	for i, entry := range args.Entries {
+		if i+offset < logSizeBeforeSync {
+			rf.logs[i] = entry
+		} else {
+			rf.logs = append(rf.logs, entry)
+		}
+	}
+	// syncing with learder about commits
+	if args.LeaderCommit >= rf.commitIndex {
+		if args.LeaderCommit > len(rf.logs) {
+			rf.commitIndex = args.LeaderCommit
+		} else {
+			rf.commitIndex = len(rf.logs)
+		}
+	} else {
+		// this else seems wired to me, imagine this
+		// server 0, 1, 2
+		// 0 is the leader, 1, 2 follower
+		// 0, 1 running all good at term 1 with index up to 6
+		// 2 network failed at after index2, and started to launch election and update terms
+		// 2 network resumed at term4, will win the election (with term4)
+		// 2 largest index is 1 will erase all 0, 1 commits from 2 - 6
+		rf.commitIndex = args.LeaderCommit
+		rf.lastApplied = 0
+	}
+
+	// fmt.Printf("Fllower : %d log size: %d commitedIndex: %d\n", rf.me, len(rf.logs), rf.commitIndex)
+	// applying changes, do nothing now..
+	if rf.commitIndex > rf.lastApplied {
+		// fmt.Printf("log size befoer sync: %d \n", logSizeBeforeSync)
+		// fmt.Printf("Server %d commitIndex: %d \n", rf.me, rf.commitIndex)
+		// fmt.Printf("Server %d applying from %d to %d %v\n", rf.me, rf.lastApplied+1, rf.commitIndex, args.Entries)
+
+		for i := rf.lastApplied + 1 - 1; i <= rf.commitIndex-1; i++ {
+			// i + 1 for mapping index in array to logical index
+			rf.applyCh <- ApplyMsg{true, rf.logs[i].Command, i + 1}
+		}
+		rf.lastApplied = rf.commitIndex
+	}
 }
 
 // AppendEntries can only be sent from candidate(??? still confusing here) or leader to make sure it has 'leadership' to you
@@ -224,19 +289,18 @@ type AppendEntriesReply struct {
 // for currentTerm == other.term, they are on the same page, we should discuss the state
 // keep in mind, if a worker is candidate, it already votes for itself
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if rf.currentTerm > args.Term {
+		// Rejects "leadership" claim, just ignore outdated workers
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
 	if rf.currentTerm < args.Term {
 		// currentTerm is smaller, no matter what state you are in, become Follower, update term
 		// Approve appendEntry
 		rf.workerState = Follower
 		rf.currentTerm = args.Term
-
-		reply.Term = args.Term
-		reply.Success = true
-		rf.heartbeatCh <- true
-	} else if rf.currentTerm > args.Term {
-		// Rejects "leadership" claim, just ignore outdated workers
-		reply.Term = rf.currentTerm
-		reply.Success = false
 	} else {
 		// if they are on the same page, it is almost the same as <, but let's keep it here for a better explanation
 		// i am thinking about two leaders and followers with different leaders, it seems that we don't need to consider this for now
@@ -244,14 +308,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if args.LeaderID != rf.me {
 			rf.workerState = Follower
 		}
+	}
 
-		reply.Term = args.Term
+	// here we consider heartbeat as success, whole success depends on log entry checking
+	reply.Term = args.Term
+	rf.heartbeatCh <- true
+	if len(args.Entries) == 0 {
 		reply.Success = true
-		rf.heartbeatCh <- true
+	} else {
+		fmt.Printf("Server: %d commitIndex: %d logSize: %d term:  %d prevIndex: %d prevTerm: %d argsSize : %d ### %v\n", rf.me, rf.commitIndex, len(rf.logs), args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.Entries)
+		if args.PrevLogIndex == 0 || rf.logs[args.PrevLogIndex-1].Term == args.PrevLogTerm {
+			reply.Success = true
+			go rf.SynEntriesWithLeader(args, reply)
+		} else {
+			reply.Success = false
+		}
 	}
 }
 
-// LaunchPeriodicHeartbeatCheck :
+// LaunchPeriodicHeartbeatCheck : This is for the follower
 func (rf *Raft) LaunchPeriodicHeartbeatCheck(heartbeatCh chan bool, electionSignalCh chan bool) {
 	for {
 		timeout := FollowerHeartbeatTimeoutMilli + FollowerHeartbeatTimeoutMilli/4 -
@@ -282,7 +357,12 @@ func (rf *Raft) LaunchStartNewRoundElectionListen(electionSignalCh chan bool, le
 		rf.mu.Unlock()
 
 		replyArr := make([]RequestVoteReply, len(rf.peers))
-		requestArgs := RequestVoteArgs{rf.currentTerm, rf.me}
+		var requestArgs RequestVoteArgs
+		if logSize := len(rf.logs); logSize > 0 {
+			requestArgs = RequestVoteArgs{rf.currentTerm, rf.me, logSize, rf.logs[logSize-1].Term}
+		} else {
+			requestArgs = RequestVoteArgs{rf.currentTerm, rf.me, 0, rf.currentTerm}
+		}
 		for peerID := 0; peerID < len(rf.peers); peerID++ {
 			go rf.sendRequestVote(peerID, &requestArgs, &replyArr[peerID])
 		}
@@ -328,16 +408,29 @@ func (rf *Raft) LaunchStartNewRoundElectionListen(electionSignalCh chan bool, le
 	}
 }
 
-// LaunchLeaderHeartbeatListen :
+// LaunchLeaderHeartbeatListen : the thread for leader to append entries/send heartbeats
 func (rf *Raft) LaunchLeaderHeartbeatListen(leaderSignalCh chan bool) {
 	for {
 		<-leaderSignalCh
 		// fmt.Printf("LEADER now: %d state: %d\n", rf.me, rf.workerState)
+		// fmt.Printf("LEADER now: %d log size: %d commitedIndex: %d\n", rf.me, len(rf.logs), rf.commitIndex)
 
 		replyArr := make([]AppendEntriesReply, len(rf.peers))
+		reqArr := make([]AppendEntriesArgs, len(rf.peers))
 		for peerID := 0; peerID < len(rf.peers); peerID++ {
-			appendEntriesArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
-			go rf.sendAppendEntries(peerID, &appendEntriesArgs, &replyArr[peerID])
+			var prevIndex, prevTerm int
+			var entriesForAppend []LogEntry
+			if rf.nextIndex[peerID] > 1 {
+				prevIndex = rf.nextIndex[peerID] - 1
+				prevTerm = rf.logs[prevIndex-1].Term
+				// prevIndex - 1 for mapping logical index to log array index, +1 for start of nextIndex
+				entriesForAppend = rf.logs[prevIndex-1+1:]
+			} else {
+				entriesForAppend = rf.logs
+			}
+
+			reqArr[peerID] = AppendEntriesArgs{rf.currentTerm, rf.me, prevIndex, prevTerm, entriesForAppend, rf.commitIndex}
+			go rf.sendAppendEntries(peerID, &reqArr[peerID], &replyArr[peerID])
 		}
 
 		time.Sleep(LeaderHeartbeatIntervalMilli * time.Millisecond)
@@ -345,11 +438,35 @@ func (rf *Raft) LaunchLeaderHeartbeatListen(leaderSignalCh chan bool) {
 		for peerID := 0; peerID < len(rf.peers); peerID++ {
 			if replyArr[peerID].Term > rf.currentTerm {
 				rf.workerState = Follower
-				break
+			}
+			if !replyArr[peerID].Success {
+				rf.nextIndex[peerID] = rf.nextIndex[peerID/2]
+			} else {
+				// cause sending all entries from Prev to End
+				// These two are wrong examples about synchronization problem, avoid using things like rf.logs which might cause race condition
+				// it could happen that, leader is taking new entry while syncing the old entries to followers, at this time the new entry will be considered as synced but acutally not
+				// rf.matchIndex[peerID] = len(rf.logs)
+				// rf.nextIndex[peerID] = len(rf.logs) + 1
+				rf.matchIndex[peerID] = rf.matchIndex[peerID] + len(reqArr[peerID].Entries)
+				if rf.matchIndex[peerID]+1 != rf.nextIndex[peerID] {
+					fmt.Printf("updating nextIndex for %d from %d to %d with entries: %v\n", peerID, rf.nextIndex[peerID], rf.matchIndex[peerID]+1, reqArr[peerID])
+				}
+				rf.nextIndex[peerID] = rf.matchIndex[peerID] + 1
 			}
 		}
 		// fmt.Printf("LEADER end state: %d\n", rf.workerState)
 		if rf.workerState == Leader {
+			for i := rf.commitIndex + 1; i <= len(rf.logs); i++ {
+				successCount := 0
+				for peerID := 0; peerID < len(rf.peers); peerID++ {
+					if replyArr[peerID].Success {
+						successCount++
+					}
+				}
+				if 2*successCount > len(rf.peers) && rf.logs[i-1].Term == rf.currentTerm {
+					rf.commitIndex = i
+				}
+			}
 			leaderSignalCh <- true
 		}
 	}
@@ -408,13 +525,19 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := 0
-	isLeader := false
-
-	// Your code here (2B).
-
-	return index, term, isLeader
+	if rf.workerState != Leader {
+		return 0, 0, false
+	} else {
+		fmt.Printf("leader %d\n", rf.me)
+		newIndex := len(rf.logs) + 1
+		go func(cmd interface{}) {
+			rf.mu.Lock()
+			newLogEntry := LogEntry{rf.currentTerm, cmd}
+			rf.logs = append(rf.logs, newLogEntry)
+			rf.mu.Unlock()
+		}(command)
+		return newIndex, rf.currentTerm, true
+	}
 }
 
 //
@@ -451,6 +574,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.heartbeatCh = make(chan bool, 3)
 	rf.electionSignalCh = make(chan bool, 3)
 	rf.leaderSignalCh = make(chan bool, 3)
+
+	//2B
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = make([]int, len(rf.peers))
+	for i := range rf.nextIndex {
+		rf.nextIndex[i] = 1
+	}
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.applyCh = applyCh
 
 	go rf.LaunchPeriodicHeartbeatCheck(rf.heartbeatCh, rf.electionSignalCh)
 	go rf.LaunchStartNewRoundElectionListen(rf.electionSignalCh, rf.leaderSignalCh)

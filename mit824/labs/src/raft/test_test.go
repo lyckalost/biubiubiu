@@ -81,6 +81,7 @@ func TestReElection2A(t *testing.T) {
 }
 
 func TestBasicAgree2B(t *testing.T) {
+	time.Sleep(1 * time.Second)
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -104,6 +105,7 @@ func TestBasicAgree2B(t *testing.T) {
 }
 
 func TestFailAgree2B(t *testing.T) {
+	time.Sleep(1 * time.Second)
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -135,6 +137,7 @@ func TestFailAgree2B(t *testing.T) {
 }
 
 func TestFailNoAgree2B(t *testing.T) {
+	time.Sleep(1 * time.Second)
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -186,6 +189,7 @@ func TestFailNoAgree2B(t *testing.T) {
 }
 
 func TestConcurrentStarts2B(t *testing.T) {
+	time.Sleep(1 * time.Second)
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -287,6 +291,7 @@ loop:
 }
 
 func TestRejoin2B(t *testing.T) {
+	time.Sleep(1 * time.Second)
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -325,6 +330,7 @@ func TestRejoin2B(t *testing.T) {
 }
 
 func TestBackup2B(t *testing.T) {
+	time.Sleep(1 * time.Second)
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -397,6 +403,7 @@ func TestBackup2B(t *testing.T) {
 }
 
 func TestCount2B(t *testing.T) {
+	time.Sleep(1 * time.Second)
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
