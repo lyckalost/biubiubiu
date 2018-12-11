@@ -180,21 +180,23 @@ type RequestVoteReply struct {
 // for currentTerm == other.term, they are on the same page, we should discuss the state
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	// by default not vote
+	reply.Term = Max(rf.currentTerm, args.Term)
+	reply.VoteGranted = false
+
 	// Your code here (2A, 2B).
 	if rf.currentTerm < args.Term {
 		// leader or candidate to follower, state transition happens here
 		rf.currentTerm = args.Term
 		rf.workerState = Follower
 
-		reply.Term = args.Term
-		reply.VoteGranted = true
-		rf.heartbeatCh <- true
+		// don't think this can ensure log entry coverage
+		if args.LastLogIndex >= rf.commitIndex && (len(rf.logs) == 0 || args.LastLogTerm >= rf.logs[rf.commitIndex-1].Term) {
+			reply.VoteGranted = true
+		}
 	} else if rf.currentTerm > args.Term {
 		// not on the same page, declines always, no state or term change
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
 	} else {
-		reply.Term = rf.currentTerm
 		// on the same page, only a candidate can vote for others and become a Follower.
 		// leader and follower kind of "freezed" on this term. (One worker can only vote for one in a term)
 		if rf.workerState == Candidate {
@@ -203,12 +205,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				rf.workerState = Follower
 			}
 
-			reply.VoteGranted = true
-		} else {
-			reply.VoteGranted = false
+			if args.LastLogIndex >= rf.commitIndex && (len(rf.logs) == 0 || args.LastLogTerm >= rf.logs[rf.commitIndex-1].Term) {
+				reply.VoteGranted = true
+			}
 		}
-		rf.heartbeatCh <- true
 	}
+	rf.heartbeatCh <- true
 
 	// else {
 	// 	// if requestor term equals or smaller than currentTerm, consider
@@ -238,42 +240,28 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
-// SynEntriesWithLeader :
-func (rf *Raft) SynEntriesWithLeader(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	logSizeBeforeSync := len(rf.logs)
-	offset := args.PrevLogIndex - 1 + 1
-	for i, entry := range args.Entries {
-		if i+offset < logSizeBeforeSync {
-			rf.logs[i] = entry
-		} else {
-			rf.logs = append(rf.logs, entry)
-		}
-	}
-	// syncing with learder about commits
-	if args.LeaderCommit >= rf.commitIndex {
-		if args.LeaderCommit > len(rf.logs) {
-			rf.commitIndex = args.LeaderCommit
-		} else {
-			rf.commitIndex = len(rf.logs)
-		}
+func Min(a int, b int) int {
+	if a < b {
+		return a
 	} else {
-		// this else seems wired to me, imagine this
-		// server 0, 1, 2
-		// 0 is the leader, 1, 2 follower
-		// 0, 1 running all good at term 1 with index up to 6
-		// 2 network failed at after index2, and started to launch election and update terms
-		// 2 network resumed at term4, will win the election (with term4)
-		// 2 largest index is 1 will erase all 0, 1 commits from 2 - 6
-		rf.commitIndex = args.LeaderCommit
-		rf.lastApplied = 0
+		return b
 	}
+}
 
-	// fmt.Printf("Fllower : %d log size: %d commitedIndex: %d\n", rf.me, len(rf.logs), rf.commitIndex)
-	// applying changes, do nothing now..
+func Max(a int, b int) int {
+	if a > b {
+		return a
+	} else {
+		return b
+	}
+}
+
+func (rf *Raft) applyChangesToLatestCommit() {
+
 	if rf.commitIndex > rf.lastApplied {
 		// fmt.Printf("log size befoer sync: %d \n", logSizeBeforeSync)
 		// fmt.Printf("Server %d commitIndex: %d \n", rf.me, rf.commitIndex)
-		// fmt.Printf("Server %d applying from %d to %d %v\n", rf.me, rf.lastApplied+1, rf.commitIndex, args.Entries)
+		fmt.Printf("Server %d applying from %d to %d %v\n", rf.me, rf.lastApplied+1, rf.commitIndex, rf.logs)
 
 		for i := rf.lastApplied + 1 - 1; i <= rf.commitIndex-1; i++ {
 			// i + 1 for mapping index in array to logical index
@@ -283,12 +271,64 @@ func (rf *Raft) SynEntriesWithLeader(args *AppendEntriesArgs, reply *AppendEntri
 	}
 }
 
+// SynEntriesWithLeader :
+// actually this method performs two operations :
+// 1) sync with learder about the entries
+// 2) apply entries to latest leader commit
+func (rf *Raft) SynEntriesWithLeader(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	logSizeBeforeSync := len(rf.logs)
+	offset := args.PrevLogIndex - 1 + 1
+	for i, entry := range args.Entries {
+		if i+offset < logSizeBeforeSync {
+			rf.logs[i+offset] = entry
+		} else {
+			rf.logs = append(rf.logs, entry)
+		}
+	}
+	fmt.Printf("SYNC server: %d prevIndex: %d %v\n", rf.me, args.PrevLogIndex, rf.logs)
+	// syncing with learder about commits
+	if args.LeaderCommit >= rf.commitIndex {
+		rf.commitIndex = Min(args.LeaderCommit, len(rf.logs))
+	} else {
+		// this else seems wired to me, imagine this
+		// server 0, 1, 2
+		// 0 is the leader, 1, 2 follower
+		// 0, 1 running all good at term 1 with index up to 6
+		// 2 network failed at after index2, and started to launch election and update terms
+		// 2 network resumed at term4, will win the election (with term4)
+		// 2 largest index is 1 will erase all 0, 1 commits from 2 - 6
+		rf.commitIndex = args.LeaderCommit
+		rf.lastApplied = args.LeaderCommit
+	}
+
+	// fmt.Printf("Fllower : %d log size: %d commitedIndex: %d\n", rf.me, len(rf.logs), rf.commitIndex)
+	// applying changes, do nothing now..
+	// if rf.commitIndex > rf.lastApplied {
+	// 	// fmt.Printf("log size befoer sync: %d \n", logSizeBeforeSync)
+	// 	// fmt.Printf("Server %d commitIndex: %d \n", rf.me, rf.commitIndex)
+	// 	fmt.Printf("Server %d applying from %d to %d %v\n", rf.me, rf.lastApplied+1, rf.commitIndex, args.Entries)
+
+	// 	for i := rf.lastApplied + 1 - 1; i <= rf.commitIndex-1; i++ {
+	// 		// i + 1 for mapping index in array to logical index
+	// 		rf.applyCh <- ApplyMsg{true, rf.logs[i].Command, i + 1}
+	// 	}
+	// 	rf.lastApplied = rf.commitIndex
+	// }
+	rf.applyChangesToLatestCommit()
+}
+
 // AppendEntries can only be sent from candidate(??? still confusing here) or leader to make sure it has 'leadership' to you
 // Each worker must only vote for one leader at a time, it means we need to make a difference between currentTerm > other.term and currentTerm = other.term
 // for currentTerm > other.term, it declines the request anyway, since it is outdated
 // for currentTerm == other.term, they are on the same page, we should discuss the state
 // keep in mind, if a worker is candidate, it already votes for itself
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if rf.me == args.LeaderID {
+		reply.Success = true
+		reply.Term = rf.currentTerm
+		return
+	}
+
 	if rf.currentTerm > args.Term {
 		// Rejects "leadership" claim, just ignore outdated workers
 		reply.Term = rf.currentTerm
@@ -316,18 +356,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if len(args.Entries) == 0 {
 		reply.Success = true
 	} else {
-		fmt.Printf("Server: %d commitIndex: %d logSize: %d term:  %d prevIndex: %d prevTerm: %d argsSize : %d ### %v\n", rf.me, rf.commitIndex, len(rf.logs), args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.Entries)
+		fmt.Printf("APPEDN--- Server: %d commitIndex: %d LeaderCommig: %d logSize: %d term:  %d prevIndex: %d prevTerm: %d argsSize : %d ### %v\n", rf.me, rf.commitIndex, args.LeaderCommit, len(rf.logs), args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.Entries)
 		if args.PrevLogIndex == 0 || rf.logs[args.PrevLogIndex-1].Term == args.PrevLogTerm {
+			rf.SynEntriesWithLeader(args, reply)
 			reply.Success = true
-			go rf.SynEntriesWithLeader(args, reply)
 		} else {
 			reply.Success = false
 		}
 	}
 }
 
-// LaunchPeriodicHeartbeatCheck : This is for the follower
-func (rf *Raft) LaunchPeriodicHeartbeatCheck(heartbeatCh chan bool, electionSignalCh chan bool) {
+// LaunchFollowerPeriodicHeartbeatCheck : This is for the follower
+func (rf *Raft) LaunchFollowerPeriodicHeartbeatCheck(heartbeatCh chan bool, electionSignalCh chan bool) {
 	for {
 		timeout := FollowerHeartbeatTimeoutMilli + FollowerHeartbeatTimeoutMilli/4 -
 			rand.Intn(FollowerHeartbeatTimeoutMilli/2)
@@ -408,8 +448,8 @@ func (rf *Raft) LaunchStartNewRoundElectionListen(electionSignalCh chan bool, le
 	}
 }
 
-// LaunchLeaderHeartbeatListen : the thread for leader to append entries/send heartbeats
-func (rf *Raft) LaunchLeaderHeartbeatListen(leaderSignalCh chan bool) {
+// LaunchSendPeriodicHeartbeatAsLeader : the thread for leader to append entries/send heartbeats
+func (rf *Raft) LaunchSendPeriodicHeartbeatAsLeader(leaderSignalCh chan bool) {
 	for {
 		<-leaderSignalCh
 		// fmt.Printf("LEADER now: %d state: %d\n", rf.me, rf.workerState)
@@ -435,6 +475,7 @@ func (rf *Raft) LaunchLeaderHeartbeatListen(leaderSignalCh chan bool) {
 
 		time.Sleep(LeaderHeartbeatIntervalMilli * time.Millisecond)
 
+		// update nextIndex for each follower according to append status
 		for peerID := 0; peerID < len(rf.peers); peerID++ {
 			if replyArr[peerID].Term > rf.currentTerm {
 				rf.workerState = Follower
@@ -449,12 +490,15 @@ func (rf *Raft) LaunchLeaderHeartbeatListen(leaderSignalCh chan bool) {
 				// rf.nextIndex[peerID] = len(rf.logs) + 1
 				rf.matchIndex[peerID] = rf.matchIndex[peerID] + len(reqArr[peerID].Entries)
 				if rf.matchIndex[peerID]+1 != rf.nextIndex[peerID] {
-					fmt.Printf("updating nextIndex for %d from %d to %d with entries: %v\n", peerID, rf.nextIndex[peerID], rf.matchIndex[peerID]+1, reqArr[peerID])
+					// fmt.Printf("updating nextIndex for %d from %d to %d with entries: %v\n", peerID, rf.nextIndex[peerID], rf.matchIndex[peerID]+1, reqArr[peerID])
 				}
 				rf.nextIndex[peerID] = rf.matchIndex[peerID] + 1
 			}
 		}
+		time.Sleep(1 * time.Millisecond)
 		// fmt.Printf("LEADER end state: %d\n", rf.workerState)
+
+		// this server could not be leader if some follower returned a higher term
 		if rf.workerState == Leader {
 			for i := rf.commitIndex + 1; i <= len(rf.logs); i++ {
 				successCount := 0
@@ -467,6 +511,8 @@ func (rf *Raft) LaunchLeaderHeartbeatListen(leaderSignalCh chan bool) {
 					rf.commitIndex = i
 				}
 			}
+			// apply newly commited changes
+			rf.applyChangesToLatestCommit()
 			leaderSignalCh <- true
 		}
 	}
@@ -585,9 +631,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.applyCh = applyCh
 
-	go rf.LaunchPeriodicHeartbeatCheck(rf.heartbeatCh, rf.electionSignalCh)
+	go rf.LaunchFollowerPeriodicHeartbeatCheck(rf.heartbeatCh, rf.electionSignalCh)
 	go rf.LaunchStartNewRoundElectionListen(rf.electionSignalCh, rf.leaderSignalCh)
-	go rf.LaunchLeaderHeartbeatListen(rf.leaderSignalCh)
+	go rf.LaunchSendPeriodicHeartbeatAsLeader(rf.leaderSignalCh)
 
 	// Your initialization code here (2A, 2B, 2C).
 
