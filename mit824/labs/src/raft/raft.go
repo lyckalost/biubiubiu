@@ -55,13 +55,13 @@ const (
 )
 
 // LeaderHeartbeatIntervalMilli :
-const LeaderHeartbeatIntervalMilli = 20
+const LeaderHeartbeatIntervalMilli = 50
 
 // FollowerHeartbeatTimeoutMilli : Define Follower heartbeat timeout here.
-const FollowerHeartbeatTimeoutMilli = 100
+const FollowerHeartbeatTimeoutMilli = 300
 
 // ElectionTimeoutMilli : Define Election timeout of each term here.
-const ElectionTimeoutMilli = 500
+const ElectionTimeoutMilli = 1000
 
 // LogEntry :
 type LogEntry struct {
@@ -187,11 +187,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	if rf.currentTerm < args.Term {
 		// leader or candidate to follower, state transition happens here
-		rf.currentTerm = args.Term
+		// always update state before modifying terms if race conditions are not well handled
 		rf.workerState = Follower
+		rf.currentTerm = args.Term
 
 		// don't think this can ensure log entry coverage
-		if args.LastLogIndex >= rf.commitIndex && (len(rf.logs) == 0 || args.LastLogTerm >= rf.logs[rf.commitIndex-1].Term) {
+		if args.LastLogIndex >= rf.commitIndex && (rf.commitIndex == 0 || args.LastLogTerm >= rf.logs[rf.commitIndex-1].Term) {
+			// if rf.commitIndex != 0 {
+			// 	fmt.Printf("Server %d giving vote to Candidate %d with LastLogIndex: %d LastLogTerm: %d vs server commitIndex: %d logSize: %d term: %d\n ", rf.me, args.CandidateID, args.LastLogIndex, args.LastLogTerm, rf.commitIndex, len(rf.logs), rf.logs[rf.commitIndex-1].Term)
+			// }
 			reply.VoteGranted = true
 		}
 	} else if rf.currentTerm > args.Term {
@@ -205,7 +209,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				rf.workerState = Follower
 			}
 
-			if args.LastLogIndex >= rf.commitIndex && (len(rf.logs) == 0 || args.LastLogTerm >= rf.logs[rf.commitIndex-1].Term) {
+			if args.LastLogIndex >= rf.commitIndex && (rf.commitIndex == 0 || args.LastLogTerm >= rf.logs[rf.commitIndex-1].Term) {
+				// if rf.commitIndex != 0 {
+				// 	fmt.Printf("Server %d giving vote to Candidate %d with LastLogIndex: %d LastLogTerm: %d vs server commitIndex: %d logSize: %d term: %d\n ", rf.me, args.CandidateID, args.LastLogIndex, args.LastLogTerm, rf.commitIndex, len(rf.logs), rf.logs[rf.commitIndex-1].Term)
+				// }
 				reply.VoteGranted = true
 			}
 		}
@@ -261,7 +268,7 @@ func (rf *Raft) applyChangesToLatestCommit() {
 	if rf.commitIndex > rf.lastApplied {
 		// fmt.Printf("log size befoer sync: %d \n", logSizeBeforeSync)
 		// fmt.Printf("Server %d commitIndex: %d \n", rf.me, rf.commitIndex)
-		fmt.Printf("Server %d applying from %d to %d %v\n", rf.me, rf.lastApplied+1, rf.commitIndex, rf.logs)
+		// fmt.Printf("Server %d applying from %d to %d %v\n", rf.me, rf.lastApplied+1, rf.commitIndex, rf.logs)
 
 		for i := rf.lastApplied + 1 - 1; i <= rf.commitIndex-1; i++ {
 			// i + 1 for mapping index in array to logical index
@@ -285,7 +292,7 @@ func (rf *Raft) SynEntriesWithLeader(args *AppendEntriesArgs, reply *AppendEntri
 			rf.logs = append(rf.logs, entry)
 		}
 	}
-	fmt.Printf("SYNC server: %d prevIndex: %d %v\n", rf.me, args.PrevLogIndex, rf.logs)
+	// fmt.Printf("SYNC server: %d from leader %d prevIndex: %d logs: %v args: %v\n", rf.me, args.LeaderID, args.PrevLogIndex, rf.logs, args.Entries)
 	// syncing with learder about commits
 	if args.LeaderCommit >= rf.commitIndex {
 		rf.commitIndex = Min(args.LeaderCommit, len(rf.logs))
@@ -314,6 +321,9 @@ func (rf *Raft) SynEntriesWithLeader(args *AppendEntriesArgs, reply *AppendEntri
 	// 	}
 	// 	rf.lastApplied = rf.commitIndex
 	// }
+	if rf.commitIndex > rf.lastApplied {
+		fmt.Printf("Server %d applying from %d to %d %v FOLLOWER\n", rf.me, rf.lastApplied+1, rf.commitIndex, rf.logs)
+	}
 	rf.applyChangesToLatestCommit()
 }
 
@@ -354,16 +364,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = args.Term
 	rf.heartbeatCh <- true
 	if len(args.Entries) == 0 {
-		reply.Success = true
+		if args.PrevLogIndex == 0 || (len(rf.logs) >= args.PrevLogIndex && rf.logs[args.PrevLogIndex-1].Term == args.PrevLogTerm) {
+			// we need to put it even with empty entries to append also here since SynEntriesWithLeader perform both sync and apply operation
+			rf.SynEntriesWithLeader(args, reply)
+			reply.Success = true
+		} else {
+			reply.Success = false
+		}
 	} else {
-		fmt.Printf("APPEDN--- Server: %d commitIndex: %d LeaderCommig: %d logSize: %d term:  %d prevIndex: %d prevTerm: %d argsSize : %d ### %v\n", rf.me, rf.commitIndex, args.LeaderCommit, len(rf.logs), args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.Entries)
-		if args.PrevLogIndex == 0 || rf.logs[args.PrevLogIndex-1].Term == args.PrevLogTerm {
+		// fmt.Printf("APPEDN--- Server: %d commitIndex: %d LeaderCommig: %d logSize: %d term:  %d prevIndex: %d prevTerm: %d argsSize : %d ### %v\n", rf.me, rf.commitIndex, args.LeaderCommit, len(rf.logs), args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.Entries)
+		if args.PrevLogIndex == 0 || (len(rf.logs) >= args.PrevLogIndex && rf.logs[args.PrevLogIndex-1].Term == args.PrevLogTerm) {
+			// fmt.Printf("APPEDN--- Server: %d commitIndex: %d Leader: %d LeaderCommig: %d logSize: %d term:  %d prevIndex: %d prevTerm: %d argsSize : %d ### %v\n", rf.me, rf.commitIndex, args.LeaderID, args.LeaderCommit, len(rf.logs), args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.Entries)
 			rf.SynEntriesWithLeader(args, reply)
 			reply.Success = true
 		} else {
 			reply.Success = false
 		}
 	}
+	// fmt.Printf("APPEDN--- Server: %d commitIndex: %d LeaderCommig: %d logSize: %d term:  %d prevIndex: %d prevTerm: %d argsSize : %d ### %v returning %v \n", rf.me, rf.commitIndex, args.LeaderCommit, len(rf.logs), args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.Entries, reply.Success)
 }
 
 // LaunchFollowerPeriodicHeartbeatCheck : This is for the follower
@@ -452,8 +470,12 @@ func (rf *Raft) LaunchStartNewRoundElectionListen(electionSignalCh chan bool, le
 func (rf *Raft) LaunchSendPeriodicHeartbeatAsLeader(leaderSignalCh chan bool) {
 	for {
 		<-leaderSignalCh
-		// fmt.Printf("LEADER now: %d state: %d\n", rf.me, rf.workerState)
+		// fmt.Printf("LEADER now: %d term: %d\n", rf.me, rf.currentTerm)
 		// fmt.Printf("LEADER now: %d log size: %d commitedIndex: %d\n", rf.me, len(rf.logs), rf.commitIndex)
+
+		logsSizeBeforeHearbeating := len(rf.logs)
+		termBeforeHearbeating := rf.currentTerm
+		// fmt.Printf("LEADER now: %d term: %d commitIndex: %d logs: %v\n", rf.me, termBeforeHearbeating, rf.commitIndex, rf.logs)
 
 		replyArr := make([]AppendEntriesReply, len(rf.peers))
 		reqArr := make([]AppendEntriesArgs, len(rf.peers))
@@ -462,14 +484,15 @@ func (rf *Raft) LaunchSendPeriodicHeartbeatAsLeader(leaderSignalCh chan bool) {
 			var entriesForAppend []LogEntry
 			if rf.nextIndex[peerID] > 1 {
 				prevIndex = rf.nextIndex[peerID] - 1
+				// fmt.Printf("Server: %d peerID: %d prevIndex: %d prevTerm: %d logs: %v\n", rf.me, peerID, prevIndex, prevTerm, rf.logs)
 				prevTerm = rf.logs[prevIndex-1].Term
 				// prevIndex - 1 for mapping logical index to log array index, +1 for start of nextIndex
-				entriesForAppend = rf.logs[prevIndex-1+1:]
+				entriesForAppend = rf.logs[prevIndex-1+1 : logsSizeBeforeHearbeating]
 			} else {
-				entriesForAppend = rf.logs
+				entriesForAppend = rf.logs[:logsSizeBeforeHearbeating]
 			}
 
-			reqArr[peerID] = AppendEntriesArgs{rf.currentTerm, rf.me, prevIndex, prevTerm, entriesForAppend, rf.commitIndex}
+			reqArr[peerID] = AppendEntriesArgs{termBeforeHearbeating, rf.me, prevIndex, prevTerm, entriesForAppend, rf.commitIndex}
 			go rf.sendAppendEntries(peerID, &reqArr[peerID], &replyArr[peerID])
 		}
 
@@ -477,11 +500,13 @@ func (rf *Raft) LaunchSendPeriodicHeartbeatAsLeader(leaderSignalCh chan bool) {
 
 		// update nextIndex for each follower according to append status
 		for peerID := 0; peerID < len(rf.peers); peerID++ {
-			if replyArr[peerID].Term > rf.currentTerm {
+			// fmt.Printf("%d term %d vs Leader %d term %d \n", peerID, replyArr[peerID].Term, rf.me, termBeforeHearbeating)
+			if replyArr[peerID].Term > termBeforeHearbeating {
 				rf.workerState = Follower
 			}
 			if !replyArr[peerID].Success {
-				rf.nextIndex[peerID] = rf.nextIndex[peerID/2]
+				rf.nextIndex[peerID] = Max(rf.nextIndex[peerID]/2, 1)
+				rf.matchIndex[peerID] = Max(rf.nextIndex[peerID]-1, 0)
 			} else {
 				// cause sending all entries from Prev to End
 				// These two are wrong examples about synchronization problem, avoid using things like rf.logs which might cause race condition
@@ -500,25 +525,28 @@ func (rf *Raft) LaunchSendPeriodicHeartbeatAsLeader(leaderSignalCh chan bool) {
 
 		// this server could not be leader if some follower returned a higher term
 		if rf.workerState == Leader {
-			for i := rf.commitIndex + 1; i <= len(rf.logs); i++ {
+			rf.applyChangesToLatestCommit()
+
+			for i := rf.commitIndex + 1; i <= logsSizeBeforeHearbeating; i++ {
 				successCount := 0
 				for peerID := 0; peerID < len(rf.peers); peerID++ {
 					if replyArr[peerID].Success {
 						successCount++
 					}
 				}
-				if 2*successCount > len(rf.peers) && rf.logs[i-1].Term == rf.currentTerm {
+				if 2*successCount > len(rf.peers) && rf.logs[i-1].Term == termBeforeHearbeating {
+					fmt.Printf("UPDATING learder %d commitIndex from %d to %d\n", rf.me, rf.commitIndex, i)
 					rf.commitIndex = i
 				}
 			}
 			// apply newly commited changes
-			rf.applyChangesToLatestCommit()
 			leaderSignalCh <- true
 		}
 	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	// fmt.Printf("server %d sending append entry\n", rf.me)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
@@ -553,6 +581,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	// fmt.Printf("server %d sending request vote\n", rf.me)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -574,14 +603,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.workerState != Leader {
 		return 0, 0, false
 	} else {
-		fmt.Printf("leader %d\n", rf.me)
+		rf.mu.Lock()
 		newIndex := len(rf.logs) + 1
-		go func(cmd interface{}) {
-			rf.mu.Lock()
-			newLogEntry := LogEntry{rf.currentTerm, cmd}
-			rf.logs = append(rf.logs, newLogEntry)
-			rf.mu.Unlock()
-		}(command)
+		newLogEntry := LogEntry{rf.currentTerm, command}
+		rf.logs = append(rf.logs, newLogEntry)
+		rf.mu.Unlock()
+		fmt.Printf("leader %d cmd %v Term: %d NewIndex: %d logSize: %d\n", rf.me, command, rf.currentTerm, newIndex, len(rf.logs))
+		// go func(cmd interface{}) {
+		// 	rf.mu.Lock()
+		// 	newLogEntry := LogEntry{rf.currentTerm, cmd}
+		// 	rf.logs = append(rf.logs, newLogEntry)
+		// 	rf.mu.Unlock()
+		// }(command)
 		return newIndex, rf.currentTerm, true
 	}
 }

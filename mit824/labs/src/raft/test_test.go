@@ -439,6 +439,7 @@ loop:
 
 		iters := 10
 		starti, term, ok := cfg.rafts[leader].Start(1)
+		fmt.Printf("LEADER: %d, start: %v, %v, %v\n", leader, starti, term, ok)
 		if !ok {
 			// leader moved on really quickly
 			continue
@@ -448,6 +449,7 @@ loop:
 			x := int(rand.Int31())
 			cmds = append(cmds, x)
 			index1, term1, ok := cfg.rafts[leader].Start(x)
+			fmt.Printf("X-LEADER: %d, x: %d, x-start: %v, %v, %v i: %d\n", leader, x, index1, term1, ok, i)
 			if term1 != term {
 				// Term changed while starting
 				continue loop
