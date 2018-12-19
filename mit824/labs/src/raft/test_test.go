@@ -55,26 +55,32 @@ func TestReElection2A(t *testing.T) {
 
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
+	fmt.Printf("### Disconnecting %d\n", leader1)
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader.
 	cfg.connect(leader1)
+	fmt.Printf("### Reconnecting %d\n", leader1)
 	leader2 := cfg.checkOneLeader()
 
 	// if there's no quorum, no leader should
 	// be elected.
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
+	fmt.Printf("### Disconnecting %d\n", leader2)
+	fmt.Printf("### Disconnecting %d\n", (leader2+1)%servers)
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
 
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
+	fmt.Printf("### Reconnecting %d\n", (leader2+1)%servers)
 	cfg.checkOneLeader()
 
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
+	fmt.Printf("### Reconnecting %d\n", leader2)
 	cfg.checkOneLeader()
 
 	cfg.end()
@@ -561,34 +567,47 @@ func TestPersist22C(t *testing.T) {
 
 	index := 1
 	for iters := 0; iters < 5; iters++ {
+		//11
 		cfg.one(10+index, servers, true)
 		index++
 
 		leader1 := cfg.checkOneLeader()
 
+		// fmt.Printf("Disconnecting %d\n", (leader1+1)%servers)
+		// fmt.Printf("Disconnecting %d\n", (leader1+2)%servers)
 		cfg.disconnect((leader1 + 1) % servers)
 		cfg.disconnect((leader1 + 2) % servers)
 
+		//12
 		cfg.one(10+index, servers-2, true)
 		index++
 
+		// fmt.Printf("Disconnecting %d\n", (leader1+0)%servers)
+		// fmt.Printf("Disconnecting %d\n", (leader1+3)%servers)
+		// fmt.Printf("Disconnecting %d\n", (leader1+4)%servers)
 		cfg.disconnect((leader1 + 0) % servers)
 		cfg.disconnect((leader1 + 3) % servers)
 		cfg.disconnect((leader1 + 4) % servers)
-
 		cfg.start1((leader1 + 1) % servers)
 		cfg.start1((leader1 + 2) % servers)
+
+		// fmt.Printf("Connecting %d\n", (leader1+1)%servers)
+		// fmt.Printf("Connecting %d\n", (leader1+2)%servers)
 		cfg.connect((leader1 + 1) % servers)
 		cfg.connect((leader1 + 2) % servers)
 
 		time.Sleep(RaftElectionTimeout)
 
 		cfg.start1((leader1 + 3) % servers)
+		// fmt.Printf("Connecting %d\n", (leader1+3)%servers)
 		cfg.connect((leader1 + 3) % servers)
 
+		//13
 		cfg.one(10+index, servers-2, true)
 		index++
 
+		// fmt.Printf("Connecting %d\n", (leader1+4)%servers)
+		// fmt.Printf("Connecting %d\n", (leader1+0)%servers)
 		cfg.connect((leader1 + 4) % servers)
 		cfg.connect((leader1 + 0) % servers)
 	}

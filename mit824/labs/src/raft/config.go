@@ -167,6 +167,7 @@ func (cfg *config) start1(i int) {
 	applyCh := make(chan ApplyMsg)
 	go func() {
 		for m := range applyCh {
+			// fmt.Printf("%d : %v \n", i, m)
 			err_msg := ""
 			if m.CommandValid == false {
 				// ignore other types of ApplyMsg
